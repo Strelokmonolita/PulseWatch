@@ -1,12 +1,24 @@
-"""Alembic script configuration."""
-import os
+"""${message}
+
+Revision ID: ${up_revision}
+Revises: ${down_revision | comma,n}
+Create Date: ${create_date}
+"""
+from typing import Sequence, Union
+
 from alembic import op
-from datetime import datetime
+import sqlalchemy as sa
+${imports if imports else ""}
+
+revision: str = ${repr(up_revision)}
+down_revision: Union[str, Sequence[str], None] = ${repr(down_revision)}
+branch_labels: Union[str, Sequence[str], None] = ${repr(branch_labels)}
+depends_on: Union[str, Sequence[str], None] = ${repr(depends_on)}
 
 
-def get_rev_id() -> str:
-    """Generate revision ID from timestamp."""
-    return datetime.now().strftime("%Y%m%d%H%M%S")
+def upgrade() -> None:
+    ${upgrades if upgrades else "pass"}
 
 
-# This is a placeholder; actual script generation happens via alembic command
+def downgrade() -> None:
+    ${downgrades if downgrades else "pass"}

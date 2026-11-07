@@ -1,8 +1,9 @@
 """SQLAlchemy models."""
 
 import enum
+from datetime import datetime
 
-from sqlalchemy import Boolean, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -31,7 +32,7 @@ class Monitor(Base, TimestampMixin):
     __tablename__ = "monitors"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     url: Mapped[str] = mapped_column(String(2048), nullable=False)
     method: Mapped[str] = mapped_column(String(10), default="GET", nullable=False)
@@ -39,6 +40,7 @@ class Monitor(Base, TimestampMixin):
     timeout_seconds: Mapped[int] = mapped_column(Integer, default=10, nullable=False)
     interval_seconds: Mapped[int] = mapped_column(Integer, default=60, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    webhook_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
 
     user: Mapped["User"] = relationship("User", back_populates="monitors")
     checks: Mapped[list["Check"]] = relationship(
@@ -55,7 +57,7 @@ class Check(Base, TimestampMixin):
     __tablename__ = "checks"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    monitor_id: Mapped[int] = mapped_column(ForeignKey("monitors.id"), nullable=False)
+    monitor_id: Mapped[int] = mapped_column(ForeignKey("monitors.id"), nullable=False, index=True)
     status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
     response_time_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     is_success: Mapped[bool] = mapped_column(Boolean, nullable=False)
@@ -77,12 +79,18 @@ class Incident(Base, TimestampMixin):
     __tablename__ = "incidents"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    monitor_id: Mapped[int] = mapped_column(ForeignKey("monitors.id"), nullable=False)
+    monitor_id: Mapped[int] = mapped_column(ForeignKey("monitors.id"), nullable=False, index=True)
     status: Mapped[IncidentStatus] = mapped_column(
-        SQLEnum(IncidentStatus), default=IncidentStatus.OPEN, nullable=False
+        SQLEnum(
+            IncidentStatus,
+            name="incident_status",
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        default=IncidentStatus.OPEN,
+        nullable=False,
     )
-    opened_at: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    closed_at: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     monitor: Mapped["Monitor"] = relationship("Monitor", back_populates="incidents")

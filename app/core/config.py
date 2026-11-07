@@ -2,7 +2,7 @@
 
 from functools import lru_cache
 
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -33,14 +33,17 @@ class Settings(BaseSettings):
     worker_enabled: bool = True
     check_timeout_seconds: int = 10
     incident_threshold: int = 3
+    history_retention_days: int = 30
+    history_prune_interval_seconds: int = 3600
+
+    # SSRF: extra CIDR ranges to block, comma separated
+    ssrf_blocked_networks: str | None = None
 
     # API
     api_host: str = "0.0.0.0"
     api_port: int = 8000
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=False)
 
 
 @lru_cache
