@@ -52,7 +52,3 @@ dmypy.json
 *.sqlite3
 
 .ruff_cache/
-
-# Local tool scratch space
-.claude/
-
