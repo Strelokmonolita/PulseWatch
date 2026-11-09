@@ -46,6 +46,33 @@ class UnsafeURLError(ValueError):
     """Raised when a URL points into a private or reserved network."""
 
 
+def parse_http_url(url: str) -> tuple[str, int]:
+    """Validate URL syntax without DNS access and return its hostname and port."""
+    if any(
+        character.isspace() or ord(character) < 32 or ord(character) == 127 for character in url
+    ):
+        raise UnsafeURLError("URL must not contain whitespace or control characters")
+    if "\\" in url:
+        raise UnsafeURLError("URL must not contain backslashes")
+
+    try:
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError as exc:
+        raise UnsafeURLError("URL contains an invalid hostname or port") from exc
+
+    if parsed.scheme not in {"http", "https"}:
+        raise UnsafeURLError("only http and https URLs are allowed")
+    if not hostname or not hostname.rstrip("."):
+        raise UnsafeURLError("URL must contain a hostname")
+    if port == 0 or parsed.netloc.endswith(":"):
+        raise UnsafeURLError("URL port must be between 1 and 65535")
+
+    default_port = 443 if parsed.scheme == "https" else 80
+    return hostname.rstrip(".").lower(), port if port is not None else default_port
+
+
 def _parse_extra_networks(raw: str | None) -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
     """Parse a comma-separated list of extra networks to block."""
     if not raw:
@@ -72,6 +99,9 @@ def _is_forbidden_ip(raw: str) -> bool:
         address = ipaddress.ip_address(raw)
     except ValueError:
         return True
+    mapped = address.ipv4_mapped if isinstance(address, ipaddress.IPv6Address) else None
+    if mapped is not None and _is_forbidden_ip(str(mapped)):
+        return True
     if address.is_multicast or address.is_unspecified or address.is_reserved:
         return True
     return any(address in network for network in blocked_networks())
@@ -88,15 +118,7 @@ async def _resolve(hostname: str, port: int) -> set[str]:
 
 async def ensure_safe_url(url: str) -> None:
     """Reject URLs targeting local or private infrastructure."""
-    parsed = urlparse(url)
-    if parsed.scheme not in {"http", "https"}:
-        raise UnsafeURLError("only http and https URLs are allowed")
-
-    hostname = parsed.hostname
-    if not hostname:
-        raise UnsafeURLError("URL must contain a hostname")
-
-    normalized = hostname.rstrip(".").lower()
+    normalized, port = parse_http_url(url)
     if normalized in _BLOCKED_HOSTNAMES or normalized.endswith(".local"):
         raise UnsafeURLError("hostname is not allowed")
 
@@ -109,7 +131,6 @@ async def ensure_safe_url(url: str) -> None:
             raise UnsafeURLError("the target address is not allowed")
         return
 
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
     addresses = await _resolve(normalized, port)
     if not addresses:
         raise UnsafeURLError("hostname could not be resolved")

@@ -3,6 +3,8 @@
 import pytest
 from httpx import AsyncClient
 
+from app.core.security import create_token, decode_token
+
 
 async def test_register_and_login(client: AsyncClient) -> None:
     response = await client.post(
@@ -70,6 +72,45 @@ async def test_refresh_token_rotates(client: AsyncClient) -> None:
     response = await client.post("/api/auth/refresh", json={"refresh_token": refresh})
     assert response.status_code == 200
     assert response.json()["access_token"]
+    rotated = response.json()["refresh_token"]
+    assert rotated != refresh
+    assert decode_token(rotated)["jti"] != decode_token(refresh)["jti"]
+
+    replay = await client.post("/api/auth/refresh", json={"refresh_token": refresh})
+    assert replay.status_code == 401
+    me = await client.get(
+        "/api/auth/me", headers={"Authorization": f"Bearer {response.json()['access_token']}"}
+    )
+    assert me.status_code == 200
+
+    next_rotation = await client.post("/api/auth/refresh", json={"refresh_token": rotated})
+    assert next_rotation.status_code == 200
+    assert next_rotation.json()["refresh_token"] not in {refresh, rotated}
+    assert (
+        await client.post("/api/auth/refresh", json={"refresh_token": rotated})
+    ).status_code == 401
+
+
+async def test_logins_issue_independent_refresh_tokens(
+    client: AsyncClient, auth_headers: dict[str, str]
+) -> None:
+    payload = {"username": "tester", "password": "supersecret1"}
+    first = (await client.post("/api/auth/login", json=payload)).json()["refresh_token"]
+    second = (await client.post("/api/auth/login", json=payload)).json()["refresh_token"]
+    assert first != second
+    for token in (first, second):
+        response = await client.post("/api/auth/refresh", json={"refresh_token": token})
+        assert response.status_code == 200
+        assert response.json()["refresh_token"] not in {first, second}
+
+
+async def test_unregistered_refresh_token_rejected(
+    client: AsyncClient, auth_headers: dict[str, str]
+) -> None:
+    user = (await client.get("/api/auth/me", headers=auth_headers)).json()
+    token = create_token({"sub": str(user["id"])}, token_type="refresh")
+    response = await client.post("/api/auth/refresh", json={"refresh_token": token})
+    assert response.status_code == 401
 
 
 async def test_access_token_cannot_refresh(

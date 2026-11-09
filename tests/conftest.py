@@ -30,16 +30,20 @@ from app.models import Base  # noqa: E402
 def settings_override(monkeypatch: pytest.MonkeyPatch) -> Settings:
     """Provide deterministic settings for every test."""
     settings = Settings(
+        _env_file=None,
         database_url=TEST_DATABASE_URL,
         database_test_url=None,
         redis_url="redis://localhost:6379/0",
         secret_key="test-secret-key",
         telegram_token=None,
         telegram_chat_id=None,
+        worker_enabled=True,
+        ssrf_blocked_networks=None,
     )
     get_settings.cache_clear()
     monkeypatch.setattr("app.core.config.get_settings", lambda: settings)
     monkeypatch.setattr("app.core.security.get_settings", lambda: settings)
+    monkeypatch.setattr("app.core.ssrf.get_settings", lambda: settings)
     monkeypatch.setattr("app.services.auth_service.get_settings", lambda: settings)
     monkeypatch.setattr("app.notifications.notifiers.get_settings", lambda: settings)
     monkeypatch.setattr("app.worker.scheduler.get_settings", lambda: settings)

@@ -6,6 +6,7 @@ from app.models.models import (
     Incident,
     IncidentStatus,
     Monitor,
+    RefreshToken,
     User,
 )
 
@@ -13,6 +14,7 @@ __all__ = [
     "Base",
     "TimestampMixin",
     "User",
+    "RefreshToken",
     "Monitor",
     "Check",
     "Incident",

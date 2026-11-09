@@ -1,15 +1,23 @@
 """Incident lifecycle and worker tests."""
 
+import asyncio
 from typing import Any
+from unittest.mock import AsyncMock, Mock
 
 import httpx
+import pytest
+from redis.asyncio import Redis
+from redis.asyncio.lock import Lock
+from redis.exceptions import LockNotOwnedError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.config import Settings
 from app.models.models import Check, Incident, IncidentStatus, Monitor, User
 from app.notifications.notifiers import Notifier
+from app.services.checker import CheckResult
 from app.services.incident_service import IncidentService
-from app.worker.scheduler import MonitorWorker
+from app.worker.scheduler import MonitorWorker, run_worker
 
 
 class RecordingNotifier(Notifier):
@@ -178,3 +186,114 @@ async def test_worker_skips_checks_until_interval(
         await worker.tick(now=161.0)
 
     assert len(calls) == 2
+
+
+async def test_disabled_worker_does_not_connect_or_start(
+    settings_override: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings_override.worker_enabled = False
+    redis_factory = Mock()
+    worker_factory = Mock()
+    monkeypatch.setattr("app.worker.scheduler.Redis.from_url", redis_factory)
+    monkeypatch.setattr("app.worker.scheduler.MonitorWorker", worker_factory)
+    await run_worker()
+    redis_factory.assert_not_called()
+    worker_factory.assert_not_called()
+
+
+async def test_disabled_worker_cannot_run_or_tick_directly(
+    settings_override: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings_override.worker_enabled = False
+    database = Mock()
+    monkeypatch.setattr("app.worker.scheduler.get_session_factory", database)
+    worker = MonitorWorker()
+    await asyncio.wait_for(worker.run(), timeout=1)
+    await worker.tick()
+    database.assert_not_called()
+
+
+@pytest.fixture
+def worker_lock(monkeypatch: pytest.MonkeyPatch) -> Mock:
+    lock = Mock(spec=Lock)
+    lock.acquire = AsyncMock(return_value=True)
+    lock.reacquire = AsyncMock(return_value=True)
+    lock.release = AsyncMock()
+    monkeypatch.setattr("app.worker.scheduler.Lock", Mock(return_value=lock))
+    monkeypatch.setattr("app.worker.scheduler._LOCK_RENEW_INTERVAL_SECONDS", 0.001)
+    return lock
+
+
+async def test_worker_renews_lock_until_check_finishes(
+    worker_lock: Mock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    renewed = asyncio.Event()
+
+    async def renew() -> bool:
+        renewed.set()
+        return True
+
+    async def check(*args: Any) -> CheckResult:
+        await renewed.wait()
+        return CheckResult(True, 200, 1, None)
+
+    worker_lock.reacquire.side_effect = renew
+    monkeypatch.setattr("app.worker.scheduler.perform_check", check)
+    worker = MonitorWorker(redis=Mock(spec=Redis))
+    persist = AsyncMock()
+    monkeypatch.setattr(worker, "_persist", persist)
+    await asyncio.wait_for(worker._check_monitor(Monitor(id=1)), timeout=1)
+    assert renewed.is_set()
+    persist.assert_awaited_once()
+    worker_lock.release.assert_awaited_once()
+
+
+async def test_lost_lock_cancels_check_before_persistence(
+    worker_lock: Mock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def check(*args: Any) -> CheckResult:
+        started.set()
+        try:
+            await asyncio.Future()
+        finally:
+            cancelled.set()
+        raise AssertionError("check must be cancelled")
+
+    async def lose_lock() -> bool:
+        await started.wait()
+        raise LockNotOwnedError("lock expired")
+
+    worker_lock.reacquire.side_effect = lose_lock
+    monkeypatch.setattr("app.worker.scheduler.perform_check", check)
+    worker = MonitorWorker(redis=Mock(spec=Redis))
+    persist = AsyncMock()
+    monkeypatch.setattr(worker, "_persist", persist)
+    await asyncio.wait_for(worker._check_monitor(Monitor(id=1)), timeout=1)
+    assert cancelled.is_set()
+    persist.assert_not_awaited()
+    worker_lock.release.assert_awaited_once()
+
+
+@pytest.mark.parametrize("unavailable", [False, True])
+async def test_worker_skips_check_without_lock_ownership(
+    worker_lock: Mock,
+    monkeypatch: pytest.MonkeyPatch,
+    unavailable: bool,
+) -> None:
+    if unavailable:
+        worker_lock.acquire.side_effect = ConnectionError("Redis unavailable")
+    else:
+        worker_lock.acquire.return_value = False
+    check = AsyncMock()
+    monkeypatch.setattr("app.worker.scheduler.perform_check", check)
+    worker = MonitorWorker(redis=Mock(spec=Redis))
+    await worker._check_monitor(Monitor(id=1))
+    check.assert_not_awaited()
+    worker_lock.release.assert_not_awaited()

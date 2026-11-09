@@ -1,5 +1,7 @@
 """Checker and SSRF protection tests."""
 
+from unittest.mock import AsyncMock
+
 import httpx
 import pytest
 
@@ -33,7 +35,7 @@ async def test_private_ipv4_rejected() -> None:
 
 
 async def test_private_ipv6_rejected() -> None:
-    for url in ("http://[::1]/", "http://[fd00::1]/"):
+    for url in ("http://[::1]/", "http://[fd00::1]/", "http://[::ffff:127.0.0.1]/"):
         with pytest.raises(UnsafeURLError):
             await ensure_safe_url(url)
 
@@ -46,6 +48,39 @@ async def test_localhost_name_rejected() -> None:
 async def test_non_http_scheme_rejected() -> None:
     with pytest.raises(UnsafeURLError):
         await ensure_safe_url("file:///etc/passwd")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://example.com:abc",
+        "http://93.184.216.34:abc",
+        "http://[2606:4700::1111]:abc",
+        "http://example.com:65536",
+        "http://[::1",
+        "http:///missing-host",
+    ],
+)
+async def test_malformed_url_is_a_controlled_check_failure(url: str) -> None:
+    request = AsyncMock()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(request)) as client:
+        with pytest.raises(UnsafeURLError):
+            await ensure_safe_url(url)
+        result = await perform_check(_monitor(url), client)
+    assert result.is_success is False
+    assert result.error_message is not None
+    assert result.error_message.startswith("unsafe url")
+    request.assert_not_called()
+
+
+async def test_dns_resolving_to_private_address_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.core.ssrf._resolve", AsyncMock(return_value={"93.184.216.34", "10.0.0.1"})
+    )
+    with pytest.raises(UnsafeURLError):
+        await ensure_safe_url("https://example.com/hook")
 
 
 async def test_public_benchmark_network_not_blocked(monkeypatch: pytest.MonkeyPatch) -> None:

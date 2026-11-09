@@ -38,7 +38,7 @@ async def login(payload: LoginRequest, session: DbSession) -> TokenPair:
         user = await service.authenticate(payload.username, payload.password)
     except AuthError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=exc.message) from exc
-    access, refresh = service.issue_tokens(user)
+    access, refresh = await service.issue_tokens(user)
     return _to_token_pair(access, refresh)
 
 

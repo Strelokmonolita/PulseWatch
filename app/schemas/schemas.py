@@ -2,9 +2,11 @@
 
 import re
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.core.ssrf import parse_http_url
 from app.models.models import IncidentStatus
 
 _EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$")
@@ -85,25 +87,15 @@ class MonitorBase(BaseModel):
     is_active: bool = True
     webhook_url: str | None = Field(default=None, max_length=2048)
 
-    @field_validator("url")
+    @field_validator("url", "webhook_url")
     @classmethod
-    def validate_url(cls, value: str) -> str:
-        """Only http/https URLs are accepted."""
-        lowered = value.strip()
-        if not lowered.lower().startswith(("http://", "https://")):
-            raise ValueError("URL must start with http:// or https://")
-        return lowered
-
-    @field_validator("webhook_url")
-    @classmethod
-    def validate_webhook_url(cls, value: str | None) -> str | None:
-        """Webhook must be an http(s) URL when provided."""
+    def validate_url(cls, value: str | None) -> str | None:
+        """Accept well-formed http(s) URLs for monitors and webhooks."""
         if value is None:
             return None
-        lowered = value.strip()
-        if not lowered.lower().startswith(("http://", "https://")):
-            raise ValueError("webhook_url must start with http:// or https://")
-        return lowered
+        value = value.strip()
+        parse_http_url(value)
+        return value
 
     @field_validator("method")
     @classmethod
@@ -131,16 +123,32 @@ class MonitorUpdate(BaseModel):
     is_active: bool | None = None
     webhook_url: str | None = Field(default=None, max_length=2048)
 
-    @field_validator("url")
+    @field_validator(
+        "name",
+        "url",
+        "method",
+        "expected_status",
+        "timeout_seconds",
+        "interval_seconds",
+        "is_active",
+        mode="before",
+    )
+    @classmethod
+    def reject_null(cls, value: Any) -> Any:
+        """Omitted fields are allowed, but database-required fields cannot be cleared."""
+        if value is None:
+            raise ValueError("field must not be null")
+        return value
+
+    @field_validator("url", "webhook_url")
     @classmethod
     def validate_url(cls, value: str | None) -> str | None:
-        """Only http/https URLs are accepted."""
+        """Apply the same URL validation to partial updates as to creation."""
         if value is None:
             return None
-        lowered = value.strip()
-        if not lowered.lower().startswith(("http://", "https://")):
-            raise ValueError("URL must start with http:// or https://")
-        return lowered
+        value = value.strip()
+        parse_http_url(value)
+        return value
 
     @field_validator("method")
     @classmethod

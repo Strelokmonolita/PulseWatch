@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
+from uuid import uuid4
 
 import jwt
 from argon2 import PasswordHasher
@@ -43,7 +44,7 @@ def create_token(
         else:
             expire = datetime.now(UTC) + timedelta(minutes=settings.access_token_expire_minutes)
 
-    to_encode.update({"exp": expire, "type": token_type})
+    to_encode.update({"exp": expire, "type": token_type, "jti": uuid4().hex})
     encoded = jwt.encode(to_encode, settings.secret_key, algorithm=settings.algorithm)
     return encoded
 

@@ -1,6 +1,7 @@
 """Authentication service."""
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 
 import jwt
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,7 +13,8 @@ from app.core.security import (
     hash_password,
     verify_password,
 )
-from app.models.models import User
+from app.models.models import RefreshToken, User
+from app.repositories.refresh_token_repository import RefreshTokenRepository
 from app.repositories.user_repository import UserRepository
 
 
@@ -31,6 +33,7 @@ class AuthService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
         self.users = UserRepository(session)
+        self.refresh_tokens = RefreshTokenRepository(session)
 
     async def register(self, username: str, email: str, password: str) -> User:
         if await self.users.get_by_username(username) is not None:
@@ -55,7 +58,12 @@ class AuthService:
             raise AuthError("user is inactive", "inactive_user")
         return user
 
-    def issue_tokens(self, user: User) -> tuple[str, str]:
+    async def issue_tokens(self, user: User) -> tuple[str, str]:
+        access, refresh, record = self._create_token_pair(user)
+        await self.refresh_tokens.create(record)
+        return access, refresh
+
+    def _create_token_pair(self, user: User) -> tuple[str, str, RefreshToken]:
         settings = get_settings()
         access = create_token(
             {"sub": str(user.id)},
@@ -67,7 +75,12 @@ class AuthService:
             timedelta(days=settings.refresh_token_expire_days),
             token_type="refresh",
         )
-        return access, refresh
+        record = RefreshToken(
+            token_hash=sha256(refresh.encode()).hexdigest(),
+            user_id=user.id,
+            expires_at=datetime.fromtimestamp(decode_token(refresh)["exp"], UTC),
+        )
+        return access, refresh, record
 
     async def refresh(self, refresh_token: str) -> tuple[User, str, str]:
         try:
@@ -92,5 +105,9 @@ class AuthService:
         if user is None or not user.is_active:
             raise AuthError("user not found", "invalid_token")
 
-        access, rotated = self.issue_tokens(user)
+        access, rotated, replacement = self._create_token_pair(user)
+        if not await self.refresh_tokens.rotate(
+            sha256(refresh_token.encode()).hexdigest(), replacement
+        ):
+            raise AuthError("refresh token has already been used or revoked", "invalid_token")
         return user, access, rotated

@@ -24,6 +24,25 @@ class User(Base, TimestampMixin):
     monitors: Mapped[list["Monitor"]] = relationship(
         "Monitor", back_populates="user", cascade="all, delete-orphan"
     )
+    refresh_tokens: Mapped[list["RefreshToken"]] = relationship(
+        "RefreshToken", back_populates="user", cascade="all, delete-orphan"
+    )
+
+
+class RefreshToken(Base, TimestampMixin):
+    """An active, single-use refresh token; only its SHA-256 digest is stored."""
+
+    __tablename__ = "refresh_tokens"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
+
+    user: Mapped["User"] = relationship("User", back_populates="refresh_tokens")
 
 
 class Monitor(Base, TimestampMixin):

@@ -2,6 +2,7 @@
 
 from typing import Any
 
+import pytest
 from httpx import AsyncClient
 
 
@@ -58,6 +59,101 @@ async def test_update_monitor(
     assert updated.json()["name"] == "Renamed"
     assert updated.json()["interval_seconds"] == 120
     assert updated.json()["url"] == monitor_payload["url"]
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "name",
+        "url",
+        "method",
+        "expected_status",
+        "timeout_seconds",
+        "interval_seconds",
+        "is_active",
+    ],
+)
+async def test_update_rejects_null_for_required_fields(
+    client: AsyncClient, auth_headers: dict[str, str], monitor_payload: dict[str, Any], field: str
+) -> None:
+    created = await client.post("/api/monitors", json=monitor_payload, headers=auth_headers)
+    monitor_id = created.json()["id"]
+
+    response = await client.patch(
+        f"/api/monitors/{monitor_id}", json={field: None}, headers=auth_headers
+    )
+    assert response.status_code == 422
+    assert response.json()["code"] == "validation_error"
+    assert response.json()["errors"][0]["field"] == f"body.{field}"
+    current = await client.get(f"/api/monitors/{monitor_id}", headers=auth_headers)
+    assert current.json()[field] == created.json()[field]
+
+
+@pytest.mark.parametrize("field", ["url", "webhook_url"])
+@pytest.mark.parametrize(
+    "url",
+    [
+        "file:///etc/passwd",
+        "ftp://example.com",
+        "gopher://example.com",
+        "javascript:alert(1)",
+        "http://example.com:abc",
+        "https://example.com:65536",
+        "http://example.com:0",
+        "http://93.184.216.34:abc",
+        "http://[::1",
+        "http:///missing-host",
+        "http://example.com:",
+        "http://exa mple.com/",
+        "http://example.com/\r\nheader",
+        "http://example.com\\path",
+    ],
+)
+async def test_invalid_urls_rejected_on_create_and_update(
+    client: AsyncClient,
+    auth_headers: dict[str, str],
+    monitor_payload: dict[str, Any],
+    field: str,
+    url: str,
+) -> None:
+    response = await client.post(
+        "/api/monitors", json={**monitor_payload, field: url}, headers=auth_headers
+    )
+    assert response.status_code == 422
+    assert response.json()["code"] == "validation_error"
+
+    created = await client.post("/api/monitors", json=monitor_payload, headers=auth_headers)
+    monitor_id = created.json()["id"]
+    response = await client.patch(
+        f"/api/monitors/{monitor_id}", json={field: url}, headers=auth_headers
+    )
+    assert response.status_code == 422
+    current = await client.get(f"/api/monitors/{monitor_id}", headers=auth_headers)
+    assert current.json()[field] == created.json()[field]
+
+
+async def test_webhook_can_be_changed_and_cleared(
+    client: AsyncClient, auth_headers: dict[str, str], monitor_payload: dict[str, Any]
+) -> None:
+    created = await client.post(
+        "/api/monitors",
+        json={**monitor_payload, "webhook_url": "http://example.com:8080/hook"},
+        headers=auth_headers,
+    )
+    assert created.status_code == 201
+    path = f"/api/monitors/{created.json()['id']}"
+    changed = await client.patch(
+        path, json={"webhook_url": "https://example.com/hook"}, headers=auth_headers
+    )
+    assert changed.status_code == 200
+    assert changed.json()["webhook_url"] == "https://example.com/hook"
+    empty_patch = await client.patch(path, json={}, headers=auth_headers)
+    assert empty_patch.status_code == 200
+    assert empty_patch.json()["webhook_url"] == changed.json()["webhook_url"]
+    cleared = await client.patch(path, json={"webhook_url": None}, headers=auth_headers)
+    assert cleared.status_code == 200
+    assert cleared.json()["webhook_url"] is None
+    assert cleared.json()["name"] == monitor_payload["name"]
 
 
 async def test_delete_monitor(
